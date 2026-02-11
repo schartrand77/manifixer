@@ -1,0 +1,32 @@
+# Git metadata
+.git
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments and local tooling
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime folders
+data/
+
+# Editor/OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Docs not required for runtime image
+README.md
+LICENSE
+unraid/
+
