@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>manifixer</Name>
+  <Repository>ghcr.io/your-org/manifixer:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/your-org/manifixer</Support>
+  <Project>https://github.com/your-org/manifixer</Project>
+  <Overview>Repairs STL meshes for 3D printing (non-manifold edges, holes, flipped normals, disconnected shells).</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/your-org/manifixer/main/unraid/manifixer.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/your-org/manifixer/main/unraid/icon.png</Icon>
+
+  <Config Name="Web UI Port" Target="8080" Default="8080" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Input Folder" Target="/data/input" Default="/mnt/user/3dprints/to_fix" Mode="rw" Description="Drop STL files to automatically repair" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/3dprints/to_fix</Config>
+  <Config Name="Output Folder" Target="/data/output" Default="/mnt/user/3dprints/fixed" Mode="rw" Description="Repaired STL output location" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/3dprints/fixed</Config>
+  <Config Name="Watch Mode" Target="WATCH_MODE" Default="1" Mode="" Description="1=watch input folder, 0=web upload only" Type="Variable" Display="always" Required="true" Mask="false">1</Config>
+  <Config Name="Polling Seconds" Target="POLL_SECONDS" Default="30" Mode="" Description="How often to scan input folder" Type="Variable" Display="advanced" Required="true" Mask="false">30</Config>
+</Container>
