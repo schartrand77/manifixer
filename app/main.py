@@ -28,135 +28,369 @@ HTML = """
   <head>
     <title>{{title}}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Manrope:wght@500;700&display=swap" rel="stylesheet">
     <style>
       :root {
-        --bg: #f5f7fa;
+        --ink: #1f2937;
+        --muted: #5d6673;
         --card: #ffffff;
-        --text: #15202b;
-        --muted: #5b6673;
+        --line: #d7dee8;
+        --brand: #ef6c2f;
+        --brand-strong: #cb4f17;
         --accent: #0f766e;
-        --accent-2: #115e59;
-        --danger: #b42318;
-        --ok: #067647;
-        --border: #d0d7de;
+        --danger: #c2410c;
+        --good: #0f766e;
+        --soft: #f6f8fb;
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
+        font-family: "Space Grotesk", "Manrope", "Trebuchet MS", sans-serif;
         margin: 0;
-        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-        color: var(--text);
-        background: linear-gradient(180deg, #eef3f8 0%, #f9fbfc 100%);
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 8% 12%, #ffd7be 0%, transparent 34%),
+          radial-gradient(circle at 89% 15%, #b9f3e4 0%, transparent 30%),
+          linear-gradient(180deg, #f4f7fb 0%, #f8fafc 100%);
+        min-height: 100vh;
       }
+
+      body::before,
+      body::after {
+        content: "";
+        position: fixed;
+        z-index: -1;
+        border-radius: 999px;
+        opacity: 0.25;
+        pointer-events: none;
+      }
+
+      body::before {
+        width: 380px;
+        height: 380px;
+        background: #ffc19c;
+        top: -130px;
+        right: -90px;
+        filter: blur(15px);
+      }
+
+      body::after {
+        width: 320px;
+        height: 320px;
+        background: #9de5db;
+        bottom: -130px;
+        left: -60px;
+        filter: blur(18px);
+      }
+
       .wrap {
-        max-width: 840px;
-        margin: 2rem auto;
-        padding: 0 1rem;
+        max-width: 980px;
+        margin: 2.4rem auto 3rem;
+        padding: 0 1.1rem;
       }
+
       .card {
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 1rem;
-        margin-bottom: 1rem;
-        box-shadow: 0 10px 30px rgba(17, 24, 39, 0.04);
+        background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 1.1rem 1.15rem;
+        margin-bottom: 0.95rem;
+        box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
+        animation: riseIn 600ms ease both;
       }
-      h1, h2 { margin: 0 0 0.75rem 0; }
-      p { margin: 0.25rem 0 0.75rem 0; }
-      .muted { color: var(--muted); }
+
+      .card:nth-child(2) { animation-delay: 70ms; }
+      .card:nth-child(3) { animation-delay: 120ms; }
+      .card:nth-child(4) { animation-delay: 170ms; }
+      .card:nth-child(5) { animation-delay: 220ms; }
+
+      @keyframes riseIn {
+        from {
+          transform: translateY(14px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+
+      .hero {
+        padding: 1.4rem 1.2rem;
+        background:
+          linear-gradient(140deg, rgba(239, 108, 47, 0.12) 0%, rgba(15, 118, 110, 0.12) 100%),
+          #ffffff;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.7rem, 4vw, 2.5rem);
+        line-height: 1.05;
+        letter-spacing: 0.01em;
+      }
+
+      h2 {
+        margin: 0 0 0.65rem 0;
+        font-size: 1.08rem;
+      }
+
+      p {
+        margin: 0.35rem 0 0.8rem 0;
+      }
+
+      .hero p {
+        max-width: 70ch;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .split {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+
+      .meta-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+      }
+
+      .meta-badges span {
+        border: 1px solid #cfd9e7;
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.79rem;
+        background: #f8fafc;
+      }
+
       .row {
         display: flex;
-        gap: 0.75rem;
+        gap: 0.65rem;
         flex-wrap: wrap;
         align-items: center;
       }
+
       input[type="file"] {
-        padding: 0.5rem;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: #fff;
+        border: 1px dashed #8fa3bd;
+        background: #f8fbff;
+        border-radius: 12px;
+        padding: 0.65rem 0.75rem;
+        font-family: inherit;
+        font-size: 0.94rem;
       }
+
       button {
-        background: var(--accent);
-        color: #fff;
+        font-family: inherit;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        color: #ffffff;
+        background: linear-gradient(145deg, var(--brand) 0%, var(--brand-strong) 100%);
         border: none;
-        border-radius: 8px;
-        padding: 0.6rem 1rem;
+        border-radius: 12px;
+        padding: 0.62rem 1.1rem;
         cursor: pointer;
-        font-weight: 600;
+        transition: transform 140ms ease, filter 140ms ease;
       }
-      button:hover { background: var(--accent-2); }
+
+      button:hover {
+        transform: translateY(-1px);
+        filter: saturate(1.08);
+      }
+
       button:disabled {
-        background: #9ca3af;
+        background: #9aa7b8;
         cursor: not-allowed;
+        transform: none;
+        filter: none;
       }
+
       .download-btn {
         display: inline-block;
         text-decoration: none;
-        background: var(--ok);
+        background: linear-gradient(150deg, #118a77 0%, #0d6b64 100%);
         color: #fff;
-        border-radius: 8px;
-        padding: 0.6rem 1rem;
-        font-weight: 600;
+        border-radius: 12px;
+        padding: 0.62rem 1.05rem;
+        font-weight: 700;
+        transition: transform 140ms ease;
       }
-      .download-btn:hover { filter: brightness(0.95); }
+
+      .download-btn:hover {
+        transform: translateY(-1px);
+      }
+
+      .timeline {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 0.65rem;
+      }
+
+      .timeline span {
+        font-size: 0.78rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        padding: 0.18rem 0.5rem;
+        border-radius: 999px;
+        border: 1px solid #d6dfeb;
+        color: #4f5b69;
+        background: #f9fbfd;
+      }
+
       .issues {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-        gap: 0.6rem;
+        grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        gap: 0.55rem;
       }
+
       .issue {
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 0.7rem;
-        background: #f8fafc;
+        border: 1px solid #d8e0ec;
+        border-radius: 14px;
+        padding: 0.7rem 0.7rem 0.63rem;
+        background: linear-gradient(180deg, #f9fbfe 0%, #f5f8fc 100%);
       }
-      .issue-name { font-size: 0.9rem; color: var(--muted); }
-      .issue-count { font-size: 1.2rem; font-weight: 700; }
-      .issue-count.ok { color: var(--ok); }
-      .issue-count.bad { color: var(--danger); }
-      .status-pill {
-        display: inline-block;
-        font-size: 0.82rem;
-        border-radius: 999px;
-        padding: 0.2rem 0.6rem;
-        border: 1px solid var(--border);
+
+      .issue-name {
+        font-size: 0.8rem;
         color: var(--muted);
       }
+
+      .issue-count {
+        font-size: 1.48rem;
+        font-weight: 700;
+        line-height: 1.05;
+      }
+
+      .issue-count.ok {
+        color: var(--good);
+      }
+
+      .issue-count.bad {
+        color: var(--danger);
+      }
+
+      .issue-bar {
+        margin-top: 0.36rem;
+        height: 7px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: #e6edf5;
+      }
+
+      .issue-bar-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #f97316 0%, #fb923c 100%);
+        transition: width 360ms ease;
+      }
+
+      .status-pill {
+        display: inline-block;
+        font-size: 0.79rem;
+        border-radius: 999px;
+        padding: 0.22rem 0.62rem;
+        border: 1px solid #cfd9e6;
+        color: #4f5b67;
+        background: #f8fafd;
+      }
+
+      .status-pill.active {
+        border-color: #f2b58d;
+        background: #fff3eb;
+        color: #9a3f14;
+      }
+
+      .status-pill.good {
+        border-color: #95d8ca;
+        background: #ebfffb;
+        color: #0d5f56;
+      }
+
+      .status-pill.bad {
+        border-color: #f2b7a8;
+        background: #fff1ee;
+        color: #9b2d19;
+      }
+
       .progress {
         width: 100%;
-        height: 10px;
+        height: 11px;
         border-radius: 999px;
-        background: #e5e7eb;
+        background: #e6ecf4;
         overflow: hidden;
       }
+
       .progress-fill {
         height: 100%;
         width: 0%;
-        background: linear-gradient(90deg, #0f766e, #14b8a6);
-        transition: width 0.35s ease;
+        background: linear-gradient(90deg, #ef6c2f 0%, #f79a43 50%, #0f766e 100%);
+        transition: width 380ms ease;
       }
+
       pre {
         white-space: pre-wrap;
-        max-height: 220px;
+        max-height: 260px;
         overflow: auto;
         margin: 0;
-        background: #0b1220;
-        color: #dbe6f6;
-        border-radius: 8px;
-        padding: 0.75rem;
-        font-size: 0.82rem;
+        background: #1b2533;
+        color: #d8e3f4;
+        border-radius: 12px;
+        padding: 0.82rem;
+        border: 1px solid #2d3c52;
+        font-size: 0.8rem;
+        line-height: 1.4;
+      }
+
+      .mono {
+        font-family: "Consolas", "SFMono-Regular", "Liberation Mono", monospace;
+      }
+
+      @media (max-width: 700px) {
+        .wrap {
+          margin-top: 1.35rem;
+          padding: 0 0.75rem;
+        }
+
+        .card {
+          padding: 0.92rem 0.9rem;
+          border-radius: 14px;
+        }
+
+        h1 {
+          font-size: 1.7rem;
+        }
       }
     </style>
   </head>
   <body>
     <main class="wrap">
-      <div class="card">
-        <h1>{{title}}</h1>
-        <p class="muted">Upload STL, analyze mesh errors, repair with visible progress, then download repaired STL.</p>
-        <p class="muted">Watch mode still runs in background using <code>{{input_dir}}</code> to <code>{{output_dir}}</code>.</p>
+      <div class="card hero">
+        <div class="split">
+          <div>
+            <h1>{{title}}</h1>
+            <p class="muted">Upload one STL, inspect mesh problems, run a staged fix, then download the repaired model.</p>
+          </div>
+          <div class="meta-badges">
+            <span>Web + Watch Mode</span>
+            <span>STL Repair</span>
+            <span>admesh Engine</span>
+          </div>
+        </div>
+        <p class="muted mono">watch: {{input_dir}} -> {{output_dir}}</p>
       </div>
 
       <div class="card">
+        <div class="timeline">
+          <span>Step 1</span><span>Upload</span><span>Analyze</span>
+        </div>
         <h2>1) Upload and Analyze</h2>
         <div class="row">
           <input id="fileInput" type="file" accept=".stl" />
@@ -166,6 +400,9 @@ HTML = """
       </div>
 
       <div class="card" id="issuesCard" style="display:none;">
+        <div class="timeline">
+          <span>Step 2</span><span>Repair</span><span>Track Errors</span>
+        </div>
         <h2>2) Errors Detected</h2>
         <div id="issuesGrid" class="issues"></div>
         <div class="row" style="margin-top:0.9rem;">
@@ -178,6 +415,9 @@ HTML = """
       </div>
 
       <div class="card" id="resultCard" style="display:none;">
+        <div class="timeline">
+          <span>Step 3</span><span>Download</span>
+        </div>
         <h2>3) Download</h2>
         <p id="resultMsg" class="muted"></p>
         <a id="downloadBtn" class="download-btn" href="#" style="display:none;">Download Repaired STL</a>
@@ -217,15 +457,39 @@ HTML = """
       const logsCard = document.getElementById("logsCard");
       const logs = document.getElementById("logs");
 
+      function setStatusTone(statusText) {
+        statusPill.className = "status-pill";
+        if (statusText === "completed") {
+          statusPill.classList.add("good");
+          return;
+        }
+        if (statusText === "failed") {
+          statusPill.classList.add("bad");
+          return;
+        }
+        if (statusText === "repairing" || statusText === "starting repair" || statusText === "analyzed") {
+          statusPill.classList.add("active");
+        }
+      }
+
       function renderIssues(issues) {
         issuesGrid.innerHTML = "";
+        let maxCount = 0;
+        Object.keys(ISSUE_LABELS).forEach((key) => {
+          const value = Number((issues && Object.prototype.hasOwnProperty.call(issues, key)) ? issues[key] : 0);
+          if (value > maxCount) maxCount = value;
+        });
+        if (maxCount < 1) maxCount = 1;
+
         Object.entries(ISSUE_LABELS).forEach(([key, label]) => {
           const count = Number((issues && Object.prototype.hasOwnProperty.call(issues, key)) ? issues[key] : 0);
+          const pct = Math.max(4, Math.min(100, Math.round((count / maxCount) * 100)));
           const div = document.createElement("div");
           div.className = "issue";
           div.innerHTML = `
             <div class="issue-name">${label}</div>
             <div class="issue-count ${count > 0 ? "bad" : "ok"}">${count}</div>
+            <div class="issue-bar"><div class="issue-bar-fill" style="width:${count > 0 ? pct : 0}%"></div></div>
           `;
           issuesGrid.appendChild(div);
         });
@@ -247,6 +511,7 @@ HTML = """
         const data = await res.json();
         renderIssues(data.issues_current || {});
         statusPill.textContent = `${data.status}${data.stage ? " | " + data.stage : ""}`;
+        setStatusTone(data.status);
 
         const remaining = Number(data.remaining_errors || 0);
         progressFill.style.width = `${computeProgress(remaining)}%`;
@@ -323,6 +588,7 @@ HTML = """
 
         repairBtn.disabled = true;
         statusPill.textContent = "starting repair";
+        setStatusTone("starting repair");
         logsCard.style.display = "";
         logs.textContent = "";
 
@@ -331,6 +597,7 @@ HTML = """
 
         if (!res.ok) {
           statusPill.textContent = "failed";
+          setStatusTone("failed");
           resultCard.style.display = "";
           resultMsg.textContent = data.error || "Could not start repair.";
           repairBtn.disabled = false;
