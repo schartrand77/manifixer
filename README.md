@@ -15,6 +15,8 @@ Internally it uses [`admesh`](https://github.com/admesh/admesh) with aggressive 
 - Automatic watch mode for batch repair from an input folder
 - Repaired files are written to an output folder as `*.fixed.stl`
 - Health endpoint: `GET /health`
+- Runtime metrics endpoint: `GET /metrics`
+- Session management endpoints: `GET /sessions`, `DELETE /sessions/<id>`
 
 ## Quick start (Docker)
 
@@ -49,6 +51,10 @@ You can also disable watch mode and use only the web uploader.
 - `WATCH_MODE` (`1` or `0`, default `1`)
 - `POLL_SECONDS` (default `30`)
 - `PORT` (default `8080`)
+- `MAX_SESSIONS` (default `40`)
+- `SESSION_TTL_SECONDS` (default `21600` / 6 hours)
+- `MAX_SESSION_LOG_CHARS` (default `60000`)
+- `ADMESH_TIMEOUT_SECONDS` (default `180`)
 
 ## Local development
 
