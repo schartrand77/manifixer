@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
+from hashlib import sha256
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request, send_file
@@ -18,6 +20,10 @@ POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 WATCH_MODE = os.getenv("WATCH_MODE", "1") == "1"
 PORT = int(os.getenv("PORT", "8080"))
 SESSION_ROOT = Path(tempfile.gettempdir()) / "manifixer-sessions"
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "40"))
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(6 * 60 * 60)))
+MAX_SESSION_LOG_CHARS = int(os.getenv("MAX_SESSION_LOG_CHARS", "60000"))
+ADMESH_TIMEOUT_SECONDS = int(os.getenv("ADMESH_TIMEOUT_SECONDS", "180"))
 
 ALLOWED_EXTENSIONS = {"stl"}
 PROCESSED_SUFFIX = ".fixed.stl"
@@ -616,6 +622,38 @@ HTML = """
 app = Flask(__name__)
 sessions: dict[str, dict] = {}
 sessions_lock = threading.Lock()
+session_order: deque[str] = deque()
+stats_lock = threading.Lock()
+stats = {
+    "analyze_requests": 0,
+    "repair_requests": 0,
+    "repair_success": 0,
+    "repair_failed": 0,
+    "watch_processed": 0,
+    "watch_failed": 0,
+}
+
+ISSUE_PATTERNS = {
+    "non_manifold_edges": [
+        re.compile(r"non[- ]manifold edges?\s*:\s*(\d+)", flags=re.IGNORECASE),
+        re.compile(r"backwards edges?\s*:\s*(\d+)", flags=re.IGNORECASE),
+    ],
+    "holes_open_boundaries": [
+        re.compile(r"holes?\s*:\s*(\d+)", flags=re.IGNORECASE),
+        re.compile(r"open edges?\s*:\s*(\d+)", flags=re.IGNORECASE),
+    ],
+    "flipped_normals": [
+        re.compile(r"flipped normals?\s*:\s*(\d+)", flags=re.IGNORECASE),
+        re.compile(r"inconsistent normals?\s*:\s*(\d+)", flags=re.IGNORECASE),
+        re.compile(r"incorrect normals?\s*:\s*(\d+)", flags=re.IGNORECASE),
+        re.compile(r"normal vectors? fixed\s*:\s*(\d+)", flags=re.IGNORECASE),
+    ],
+    "disconnected_shells": [
+        re.compile(r"disconnected shells?\s*:\s*(\d+)", flags=re.IGNORECASE),
+        re.compile(r"unconnected facets?\s*:\s*(\d+)", flags=re.IGNORECASE),
+    ],
+}
+PARTS_PATTERN = re.compile(r"number of parts\s*:\s*(\d+)", flags=re.IGNORECASE)
 
 
 def ensure_dirs() -> None:
@@ -626,6 +664,65 @@ def ensure_dirs() -> None:
 
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def increment_stat(key: str) -> None:
+    with stats_lock:
+        stats[key] = int(stats.get(key, 0)) + 1
+
+
+def trim_logs(logs: list[str]) -> list[str]:
+    joined = "\n\n".join(logs)
+    if len(joined) <= MAX_SESSION_LOG_CHARS:
+        return logs
+    keep_tail = joined[-MAX_SESSION_LOG_CHARS:]
+    marker = "[trimmed older logs]\n"
+    return [f"{marker}{keep_tail}"]
+
+
+def cleanup_expired_sessions(now: float | None = None) -> None:
+    cutoff = (now or time.time()) - SESSION_TTL_SECONDS
+    expired: list[str] = []
+    with sessions_lock:
+        for sid, sess in sessions.items():
+            last_touch = float(sess.get("updated_at", sess.get("created_at", 0)))
+            if last_touch < cutoff:
+                expired.append(sid)
+
+        for sid in expired:
+            sess = sessions.pop(sid, None)
+            if sess:
+                try:
+                    shutil.rmtree(sess.get("session_dir", ""), ignore_errors=True)
+                except Exception:
+                    pass
+            try:
+                session_order.remove(sid)
+            except ValueError:
+                pass
+
+
+def enforce_session_limit() -> None:
+    while len(session_order) > MAX_SESSIONS:
+        oldest_id = session_order.popleft()
+        sess = sessions.pop(oldest_id, None)
+        if not sess:
+            continue
+        try:
+            shutil.rmtree(sess.get("session_dir", ""), ignore_errors=True)
+        except Exception:
+            pass
+
+
+def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def run_repair(input_file: Path, output_file: Path) -> tuple[bool, str]:
@@ -644,24 +741,30 @@ def run_repair(input_file: Path, output_file: Path) -> tuple[bool, str]:
         str(input_file),
     ]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    logs = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    return proc.returncode == 0 and output_file.exists(), logs.strip()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=ADMESH_TIMEOUT_SECONDS)
+        logs = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        return proc.returncode == 0 and output_file.exists(), logs.strip()
+    except subprocess.TimeoutExpired:
+        return False, f"admesh timed out after {ADMESH_TIMEOUT_SECONDS}s"
 
 
 def run_admesh_inspect(mesh_file: Path) -> str:
     cmd = ["admesh", "--exact", str(mesh_file)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=ADMESH_TIMEOUT_SECONDS)
+        return ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return f"admesh inspect timed out after {ADMESH_TIMEOUT_SECONDS}s"
 
 
 def parse_issue_counts(admesh_text: str) -> dict[str, int]:
     text = admesh_text or ""
     lower = text.lower()
 
-    def pick_int(patterns: list[str]) -> int:
+    def pick_int(patterns: list[re.Pattern[str]]) -> int:
         for pattern in patterns:
-            m = re.search(pattern, text, flags=re.IGNORECASE)
+            m = pattern.search(text)
             if m:
                 try:
                     return max(0, int(m.group(1)))
@@ -669,28 +772,9 @@ def parse_issue_counts(admesh_text: str) -> dict[str, int]:
                     continue
         return -1
 
-    issues = {
-        "non_manifold_edges": pick_int([
-            r"non[- ]manifold edges?\s*:\s*(\d+)",
-            r"backwards edges?\s*:\s*(\d+)",
-        ]),
-        "holes_open_boundaries": pick_int([
-            r"holes?\s*:\s*(\d+)",
-            r"open edges?\s*:\s*(\d+)",
-        ]),
-        "flipped_normals": pick_int([
-            r"flipped normals?\s*:\s*(\d+)",
-            r"inconsistent normals?\s*:\s*(\d+)",
-            r"incorrect normals?\s*:\s*(\d+)",
-            r"normal vectors? fixed\s*:\s*(\d+)",
-        ]),
-        "disconnected_shells": pick_int([
-            r"disconnected shells?\s*:\s*(\d+)",
-            r"unconnected facets?\s*:\s*(\d+)",
-        ]),
-    }
+    issues = {key: pick_int(patterns) for key, patterns in ISSUE_PATTERNS.items()}
 
-    parts_match = re.search(r"number of parts\s*:\s*(\d+)", text, flags=re.IGNORECASE)
+    parts_match = PARTS_PATTERN.search(text)
     if parts_match:
         try:
             parts = int(parts_match.group(1))
@@ -731,12 +815,14 @@ def watcher_loop() -> None:
     seen: dict[Path, float] = {}
     while True:
         try:
+            cleanup_expired_sessions()
             for stl in INPUT_DIR.glob("*.stl"):
                 mtime = stl.stat().st_mtime
                 if seen.get(stl) == mtime:
                     continue
                 seen[stl] = mtime
                 ok, logs, output = process_one_file(stl)
+                increment_stat("watch_processed" if ok else "watch_failed")
                 status = "OK" if ok else "FAIL"
                 print(f"[{status}] {stl.name} -> {output.name}\n{logs}\n", flush=True)
         except Exception as exc:
@@ -748,11 +834,15 @@ def update_session(session_id: str, **updates) -> None:
     with sessions_lock:
         if session_id in sessions:
             sessions[session_id].update(updates)
+            sessions[session_id]["updated_at"] = time.time()
 
 
 def get_session(session_id: str) -> dict | None:
     with sessions_lock:
-        return sessions.get(session_id)
+        sess = sessions.get(session_id)
+        if sess:
+            sess["updated_at"] = time.time()
+        return sess
 
 
 def build_stage_cmd(input_file: Path, output_file: Path, flags: list[str]) -> list[str]:
@@ -800,11 +890,18 @@ def run_repair_session(session_id: str) -> None:
         cmd = build_stage_cmd(current_file, stage_output, stage["flags"])
 
         update_session(session_id, stage=stage_name)
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        stage_logs = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-        logs.append(f"[{stage_name}]\n{stage_logs}")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=ADMESH_TIMEOUT_SECONDS)
+            stage_logs = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        except subprocess.TimeoutExpired:
+            stage_logs = f"admesh stage timed out after {ADMESH_TIMEOUT_SECONDS}s"
+            proc = None
 
-        if proc.returncode != 0 or not stage_output.exists():
+        logs.append(f"[{stage_name}]\n{stage_logs}")
+        logs = trim_logs(logs)
+
+        if proc is None or proc.returncode != 0 or not stage_output.exists():
+            increment_stat("repair_failed")
             update_session(session_id, status="failed", stage=stage_name, logs=logs)
             return
 
@@ -825,7 +922,7 @@ def run_repair_session(session_id: str) -> None:
             session_id,
             issues_current=next_issues,
             remaining_errors=total_errors(next_issues),
-            logs=logs,
+            logs=trim_logs(logs),
         )
 
     final_name = f"{secure_filename(current_file.stem) or 'model'}{PROCESSED_SUFFIX}"
@@ -833,6 +930,7 @@ def run_repair_session(session_id: str) -> None:
     shutil.copyfile(current_file, final_output)
 
     zero_issues = {k: 0 for k in previous_issues.keys()}
+    increment_stat("repair_success")
     update_session(
         session_id,
         status="completed",
@@ -841,7 +939,7 @@ def run_repair_session(session_id: str) -> None:
         remaining_errors=0,
         output_path=str(final_output),
         output_name=final_output.name,
-        logs=logs,
+        logs=trim_logs(logs),
     )
 
 
@@ -874,7 +972,10 @@ def analyze_upload():
     if not upload.filename or not allowed_file(upload.filename):
         return jsonify({"error": "Only .stl files are supported"}), 400
 
+    increment_stat("analyze_requests")
+    cleanup_expired_sessions()
     ensure_dirs()
+
     safe_name = secure_filename(upload.filename) or "model.stl"
     session_id = uuid.uuid4().hex
     session_dir = SESSION_ROOT / session_id
@@ -882,6 +983,7 @@ def analyze_upload():
 
     input_path = session_dir / safe_name
     upload.save(input_path)
+    file_digest = file_sha256(input_path)
 
     inspect_logs = run_admesh_inspect(input_path)
     issues = parse_issue_counts(inspect_logs)
@@ -893,28 +995,35 @@ def analyze_upload():
         "stage": "analyzed",
         "session_dir": str(session_dir),
         "input_path": str(input_path),
+        "file_sha256": file_digest,
         "issues_initial": issues,
         "issues_current": dict(issues),
         "remaining_errors": total_errors(issues),
         "output_path": None,
         "output_name": None,
-        "logs": [f"[Analyze]\n{inspect_logs}"],
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "logs": trim_logs([f"[Analyze]\n{inspect_logs}"]),
     }
 
     with sessions_lock:
         sessions[session_id] = session
+        session_order.append(session_id)
+        enforce_session_limit()
 
     return jsonify(
         {
             "session_id": session_id,
             "issues": issues,
             "total_errors": total_errors(issues),
+            "file_sha256": file_digest,
         }
     )
 
 
 @app.post("/repair/<session_id>")
 def repair_session(session_id: str):
+    increment_stat("repair_requests")
     sess = get_session(session_id)
     if not sess:
         return jsonify({"error": "Session not found. Upload and analyze again."}), 404
@@ -963,6 +1072,61 @@ def download_repaired(session_id: str):
         return jsonify({"error": "Output file missing"}), 404
 
     return send_file(output_path, as_attachment=True, download_name=output_path.name)
+
+
+
+
+@app.get("/metrics")
+def metrics():
+    with stats_lock:
+        current_stats = dict(stats)
+    with sessions_lock:
+        active = len(sessions)
+    return jsonify(
+        {
+            "status": "ok",
+            "active_sessions": active,
+            "max_sessions": MAX_SESSIONS,
+            "session_ttl_seconds": SESSION_TTL_SECONDS,
+            "admesh_timeout_seconds": ADMESH_TIMEOUT_SECONDS,
+            "stats": current_stats,
+        }
+    )
+
+
+@app.get("/sessions")
+def list_sessions():
+    cleanup_expired_sessions()
+    with sessions_lock:
+        items = [
+            {
+                "session_id": sid,
+                "filename": s.get("filename"),
+                "status": s.get("status"),
+                "remaining_errors": s.get("remaining_errors", 0),
+                "created_at": s.get("created_at"),
+                "updated_at": s.get("updated_at"),
+                "output_name": s.get("output_name"),
+            }
+            for sid, s in sessions.items()
+        ]
+    items.sort(key=lambda item: item.get("updated_at") or 0, reverse=True)
+    return jsonify({"sessions": items})
+
+
+@app.delete("/sessions/<session_id>")
+def delete_session(session_id: str):
+    with sessions_lock:
+        sess = sessions.pop(session_id, None)
+        try:
+            session_order.remove(session_id)
+        except ValueError:
+            pass
+    if not sess:
+        return jsonify({"error": "Session not found"}), 404
+
+    shutil.rmtree(sess.get("session_dir", ""), ignore_errors=True)
+    return jsonify({"status": "deleted", "session_id": session_id})
 
 
 @app.post("/repair")
