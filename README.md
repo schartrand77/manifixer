@@ -19,6 +19,8 @@ Internally it uses [`admesh`](https://github.com/admesh/admesh) with aggressive 
 - Quality report with before/after issue counts, triangle count, shell count, and confidence
 - Session/temp-file retention cleanup runs automatically
 - Health endpoint: `GET /health`
+- Runtime metrics endpoint: `GET /metrics`
+- Session management endpoints: `GET /sessions`, `DELETE /sessions/<id>`
 
 ## Supported converter formats
 
@@ -70,6 +72,10 @@ You can also disable watch mode and use only the web uploader.
 - `SESSION_TTL_SECONDS` (default `7200`)
 - `CLEANUP_SECONDS` (default `300`)
 - `PORT` (default `8080`)
+- `MAX_SESSIONS` (default `40`)
+- `SESSION_TTL_SECONDS` (default `21600` / 6 hours)
+- `MAX_SESSION_LOG_CHARS` (default `60000`)
+- `ADMESH_TIMEOUT_SECONDS` (default `180`)
 
 ## Local development
 
