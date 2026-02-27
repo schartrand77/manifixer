@@ -1,6 +1,6 @@
 # manifixer
 
-`manifixer` is a Dockerized STL repair service intended for Unraid.
+`manifixer` is a Dockerized STL repair and 3D format conversion service intended for Unraid.
 
 It fixes common mesh problems that break slicing/printing, including:
 - non-manifold edges
@@ -12,9 +12,25 @@ Internally it uses [`admesh`](https://github.com/admesh/admesh) with aggressive 
 
 ## Features
 - Web UI for one-off STL upload/repair (`/` on port `8080`)
+- Web UI + API conversion tool for common 3D formats (`POST /convert`)
 - Automatic watch mode for batch repair from an input folder
-- Repaired files are written to an output folder as `*.fixed.stl`
+- Repaired files are versioned to avoid overwrite collisions (`*.fixed.stl`, `*.fixed.1.stl`, ...)
+- Watch mode uses a queue + worker pool and waits for files to stabilize before processing
+- Quality report with before/after issue counts, triangle count, shell count, and confidence
+- Session/temp-file retention cleanup runs automatically
 - Health endpoint: `GET /health`
+
+## Supported converter formats
+
+Input and output:
+- `3mf`
+- `stl`
+- `obj`
+- `ply`
+- `off`
+- `glb`
+
+The repair pipeline remains STL-only (`admesh`).
 
 ## Quick start (Docker)
 
@@ -47,7 +63,12 @@ You can also disable watch mode and use only the web uploader.
 - `INPUT_DIR` (default `/data/input`)
 - `OUTPUT_DIR` (default `/data/output`)
 - `WATCH_MODE` (`1` or `0`, default `1`)
+- `WATCH_WORKERS` (default `1`)
 - `POLL_SECONDS` (default `30`)
+- `STABILITY_CHECK_SECONDS` (default `3`)
+- `STABILITY_MAX_WAIT_SECONDS` (default `120`)
+- `SESSION_TTL_SECONDS` (default `7200`)
+- `CLEANUP_SECONDS` (default `300`)
 - `PORT` (default `8080`)
 
 ## Local development

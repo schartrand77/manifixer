@@ -1,4 +1,5 @@
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request, send_file
+import trimesh
 from werkzeug.utils import secure_filename
 
 APP_TITLE = "Manifixer"
@@ -18,8 +20,26 @@ POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 WATCH_MODE = os.getenv("WATCH_MODE", "1") == "1"
 PORT = int(os.getenv("PORT", "8080"))
 SESSION_ROOT = Path(tempfile.gettempdir()) / "manifixer-sessions"
+WATCH_WORKERS = max(1, int(os.getenv("WATCH_WORKERS", "1")))
+SESSION_TTL_SECONDS = max(60, int(os.getenv("SESSION_TTL_SECONDS", "7200")))
+CLEANUP_SECONDS = max(30, int(os.getenv("CLEANUP_SECONDS", "300")))
+STABILITY_CHECK_SECONDS = max(1, int(os.getenv("STABILITY_CHECK_SECONDS", "3")))
+STABILITY_MAX_WAIT_SECONDS = max(
+    STABILITY_CHECK_SECONDS, int(os.getenv("STABILITY_MAX_WAIT_SECONDS", "120"))
+)
 
-ALLOWED_EXTENSIONS = {"stl"}
+REPAIR_ALLOWED_EXTENSIONS = {"stl"}
+CONVERTER_ALLOWED_EXTENSIONS = {"3mf", "stl", "obj", "ply", "off", "glb"}
+CONVERTER_EXPORT_TYPES = {
+    "3mf": "3mf",
+    "stl": "stl",
+    "obj": "obj",
+    "ply": "ply",
+    "off": "off",
+    "glb": "glb",
+}
+CONVERTER_SCENE_TARGETS = {"3mf", "glb"}
+DEFAULT_CONVERTER_TARGET = "stl"
 PROCESSED_SUFFIX = ".fixed.stl"
 
 HTML = """
@@ -182,6 +202,15 @@ HTML = """
         background: #f8fbff;
         border-radius: 12px;
         padding: 0.65rem 0.75rem;
+        font-family: inherit;
+        font-size: 0.94rem;
+      }
+
+      select {
+        border: 1px solid #8fa3bd;
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 0.62rem 0.75rem;
         font-family: inherit;
         font-size: 0.94rem;
       }
@@ -376,11 +405,12 @@ HTML = """
         <div class="split">
           <div>
             <h1>{{title}}</h1>
-            <p class="muted">Upload one STL, inspect mesh problems, run a staged fix, then download the repaired model.</p>
+            <p class="muted">Repair STL files with staged mesh fixes, or convert between common 3D formats like 3MF, STL, and OBJ.</p>
           </div>
           <div class="meta-badges">
             <span>Web + Watch Mode</span>
             <span>STL Repair</span>
+            <span>3D Converter</span>
             <span>admesh Engine</span>
           </div>
         </div>
@@ -423,6 +453,32 @@ HTML = """
         <a id="downloadBtn" class="download-btn" href="#" style="display:none;">Download Repaired STL</a>
       </div>
 
+      <div class="card" id="convertCard">
+        <div class="timeline">
+          <span>Tool</span><span>Convert</span>
+        </div>
+        <h2>4) Convert 3D File Format</h2>
+        <div class="row">
+          <input id="convertFileInput" type="file" accept=".3mf,.stl,.obj,.ply,.off,.glb" />
+          <select id="convertTarget">
+            <option value="stl">STL</option>
+            <option value="3mf">3MF</option>
+            <option value="obj">OBJ</option>
+            <option value="ply">PLY</option>
+            <option value="off">OFF</option>
+            <option value="glb">GLB</option>
+          </select>
+          <button id="convertBtn" type="button">Convert File</button>
+        </div>
+        <p id="convertMsg" class="muted"></p>
+        <a id="convertDownloadBtn" class="download-btn" href="#" style="display:none;">Download Converted File</a>
+      </div>
+
+      <div class="card" id="reportCard" style="display:none;">
+        <h2>Quality Report</h2>
+        <pre id="reportView"></pre>
+      </div>
+
       <div class="card" id="logsCard" style="display:none;">
         <h2>Repair Logs</h2>
         <pre id="logs"></pre>
@@ -454,8 +510,15 @@ HTML = """
       const resultCard = document.getElementById("resultCard");
       const resultMsg = document.getElementById("resultMsg");
       const downloadBtn = document.getElementById("downloadBtn");
+      const reportCard = document.getElementById("reportCard");
+      const reportView = document.getElementById("reportView");
       const logsCard = document.getElementById("logsCard");
       const logs = document.getElementById("logs");
+      const convertFileInput = document.getElementById("convertFileInput");
+      const convertTarget = document.getElementById("convertTarget");
+      const convertBtn = document.getElementById("convertBtn");
+      const convertMsg = document.getElementById("convertMsg");
+      const convertDownloadBtn = document.getElementById("convertDownloadBtn");
 
       function setStatusTone(statusText) {
         statusPill.className = "status-pill";
@@ -503,6 +566,23 @@ HTML = """
         return Math.max(0, Math.min(100, Math.round((done / state.initialTotal) * 100)));
       }
 
+      function renderQualityReport(report) {
+        if (!report) {
+          reportCard.style.display = "none";
+          reportView.textContent = "";
+          return;
+        }
+        const errors = report.errors || {};
+        const metrics = report.metrics || {};
+        reportCard.style.display = "";
+        reportView.textContent = [
+          `Confidence: ${report.confidence || "unknown"}`,
+          `Errors: ${errors.before ?? "n/a"} -> ${errors.after ?? "n/a"} (reduced: ${errors.reduced ?? "n/a"})`,
+          `Triangles: ${metrics.triangle_count_before ?? "n/a"} -> ${metrics.triangle_count_after ?? "n/a"} (delta: ${metrics.triangle_count_delta ?? "n/a"})`,
+          `Parts: ${metrics.part_count_before ?? "n/a"} -> ${metrics.part_count_after ?? "n/a"} (delta: ${metrics.part_count_delta ?? "n/a"})`
+        ].join("\\n");
+      }
+
       async function pollStatus() {
         if (!state.sessionId) return;
         const res = await fetch(`/status/${state.sessionId}`);
@@ -518,13 +598,18 @@ HTML = """
 
         logsCard.style.display = "";
         logs.textContent = (data.logs || []).join("\\n\\n");
+        renderQualityReport(data.quality_report);
 
         if (data.status === "completed") {
           clearInterval(state.polling);
           state.polling = null;
           progressFill.style.width = "100%";
           resultCard.style.display = "";
-          resultMsg.textContent = "Repair completed. All detected errors were resolved.";
+          if ((data.remaining_errors || 0) === 0) {
+            resultMsg.textContent = "Repair completed. All detected errors were resolved.";
+          } else {
+            resultMsg.textContent = `Repair completed with ${data.remaining_errors} issue(s) remaining.`;
+          }
           downloadBtn.href = `/download/${state.sessionId}`;
           downloadBtn.style.display = "inline-block";
           repairBtn.disabled = true;
@@ -569,6 +654,7 @@ HTML = """
           state.sessionId = data.session_id;
           state.initialTotal = Number(data.total_errors || 0);
           renderIssues(data.issues || {});
+          renderQualityReport(data.quality_report);
           issuesCard.style.display = "";
           logsCard.style.display = "none";
           statusPill.textContent = "analyzed";
@@ -608,6 +694,46 @@ HTML = """
         state.polling = setInterval(pollStatus, 1000);
         pollStatus();
       });
+
+      convertBtn.addEventListener("click", async () => {
+        const file = (convertFileInput.files && convertFileInput.files[0]) ? convertFileInput.files[0] : null;
+        if (!file) {
+          convertMsg.textContent = "Choose a file to convert first.";
+          return;
+        }
+
+        const target = convertTarget.value;
+        convertBtn.disabled = true;
+        convertMsg.textContent = "Converting file...";
+        convertDownloadBtn.style.display = "none";
+
+        const form = new FormData();
+        form.append("file", file);
+        form.append("target_format", target);
+
+        try {
+          const res = await fetch("/convert", { method: "POST", body: form });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            convertMsg.textContent = data.error || "Conversion failed.";
+            return;
+          }
+
+          const outputName = res.headers.get("X-Output-Name") || "converted-model";
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+
+          convertDownloadBtn.href = objectUrl;
+          convertDownloadBtn.download = outputName;
+          convertDownloadBtn.style.display = "inline-block";
+          convertMsg.textContent = `Converted successfully to ${target.toUpperCase()}.`;
+        } catch (err) {
+          console.error("Conversion failed", err);
+          convertMsg.textContent = `Conversion failed: ${err}`;
+        } finally {
+          convertBtn.disabled = false;
+        }
+      });
     </script>
   </body>
 </html>
@@ -616,6 +742,9 @@ HTML = """
 app = Flask(__name__)
 sessions: dict[str, dict] = {}
 sessions_lock = threading.Lock()
+watch_queue: queue.Queue[tuple[Path, float]] = queue.Queue()
+queued_versions: dict[Path, float] = {}
+queued_versions_lock = threading.Lock()
 
 
 def ensure_dirs() -> None:
@@ -624,8 +753,18 @@ def ensure_dirs() -> None:
     SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-def allowed_file(filename: str) -> bool:
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+def file_extension(filename: str) -> str:
+    if "." not in filename:
+        return ""
+    return filename.rsplit(".", 1)[1].lower()
+
+
+def allowed_repair_file(filename: str) -> bool:
+    return file_extension(filename) in REPAIR_ALLOWED_EXTENSIONS
+
+
+def allowed_converter_file(filename: str) -> bool:
+    return file_extension(filename) in CONVERTER_ALLOWED_EXTENSIONS
 
 
 def run_repair(input_file: Path, output_file: Path) -> tuple[bool, str]:
@@ -653,6 +792,41 @@ def run_admesh_inspect(mesh_file: Path) -> str:
     cmd = ["admesh", "--exact", str(mesh_file)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     return ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+
+
+def convert_mesh(input_file: Path, output_file: Path, target_format: str) -> None:
+    fmt = target_format.lower()
+    export_type = CONVERTER_EXPORT_TYPES.get(fmt)
+    if not export_type:
+        raise ValueError(f"Unsupported target format: {target_format}")
+
+    try:
+        loaded = trimesh.load(str(input_file), force="scene")
+    except Exception as exc:
+        raise ValueError(f"Could not read input mesh: {exc}") from exc
+
+    if isinstance(loaded, trimesh.Scene):
+        scene = loaded
+        if not scene.geometry:
+            raise ValueError("Input model has no geometry.")
+        mesh = scene.dump(concatenate=True)
+    elif isinstance(loaded, trimesh.Trimesh):
+        mesh = loaded
+        scene = trimesh.Scene(mesh)
+    else:
+        raise ValueError("Unsupported mesh data in input file.")
+
+    if mesh is None or len(mesh.faces) == 0:
+        raise ValueError("Input model does not contain triangle faces.")
+
+    target = scene if fmt in CONVERTER_SCENE_TARGETS else mesh
+    try:
+        target.export(file_obj=str(output_file), file_type=export_type)
+    except Exception as exc:
+        raise ValueError(f"Could not export to {target_format}: {exc}") from exc
+
+    if not output_file.exists() or output_file.stat().st_size == 0:
+        raise ValueError("Conversion produced an empty output file.")
 
 
 def parse_issue_counts(admesh_text: str) -> dict[str, int]:
@@ -720,11 +894,171 @@ def total_errors(issues: dict[str, int]) -> int:
     return sum(max(0, int(v)) for v in issues.values())
 
 
-def process_one_file(source: Path) -> tuple[bool, str, Path]:
+def parse_mesh_metrics(admesh_text: str) -> dict[str, int | None]:
+    text = admesh_text or ""
+
+    def pick(pattern: str) -> int | None:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "triangle_count": pick(r"number of facets\s*:\s*(\d+)"),
+        "part_count": pick(r"number of parts\s*:\s*(\d+)"),
+    }
+
+
+def build_quality_report(
+    before_issues: dict[str, int],
+    after_issues: dict[str, int],
+    before_metrics: dict[str, int | None],
+    after_metrics: dict[str, int | None],
+) -> dict:
+    before_total = total_errors(before_issues)
+    after_total = total_errors(after_issues)
+    reduced = max(0, before_total - after_total)
+
+    confidence = "low"
+    if after_total == 0:
+        confidence = "high"
+    elif reduced > 0:
+        confidence = "medium"
+
+    tri_before = before_metrics.get("triangle_count")
+    tri_after = after_metrics.get("triangle_count")
+    part_before = before_metrics.get("part_count")
+    part_after = after_metrics.get("part_count")
+
+    return {
+        "errors": {
+            "before": before_total,
+            "after": after_total,
+            "reduced": reduced,
+        },
+        "metrics": {
+            "triangle_count_before": tri_before,
+            "triangle_count_after": tri_after,
+            "triangle_count_delta": (
+                tri_after - tri_before if tri_before is not None and tri_after is not None else None
+            ),
+            "part_count_before": part_before,
+            "part_count_after": part_after,
+            "part_count_delta": (
+                part_after - part_before
+                if part_before is not None and part_after is not None
+                else None
+            ),
+        },
+        "confidence": confidence,
+    }
+
+
+def unique_output_path(base_dir: Path, stem: str, suffix: str) -> Path:
+    safe_stem = secure_filename(stem) or "model"
+    candidate = base_dir / f"{safe_stem}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    if suffix.lower().endswith(".stl"):
+        numbered_suffix_prefix = suffix[:-4]
+        numbered_suffix_ext = ".stl"
+    else:
+        numbered_suffix_prefix = suffix
+        numbered_suffix_ext = ""
+
+    index = 1
+    while True:
+        candidate = base_dir / f"{safe_stem}{numbered_suffix_prefix}.{index}{numbered_suffix_ext}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def process_one_file(source: Path) -> tuple[bool, str, Path, dict]:
     safe_stem = secure_filename(source.stem) or "model"
-    destination = OUTPUT_DIR / f"{safe_stem}{PROCESSED_SUFFIX}"
+    destination = unique_output_path(OUTPUT_DIR, safe_stem, PROCESSED_SUFFIX)
+    before_inspect_logs = run_admesh_inspect(source)
+    before_issues = parse_issue_counts(before_inspect_logs)
+    before_metrics = parse_mesh_metrics(before_inspect_logs)
     success, logs = run_repair(source, destination)
-    return success, logs, destination
+    after_issues = dict(before_issues)
+    after_metrics = dict(before_metrics)
+    if success:
+        after_inspect_logs = run_admesh_inspect(destination)
+        after_issues = parse_issue_counts(after_inspect_logs)
+        after_metrics = parse_mesh_metrics(after_inspect_logs)
+
+    report = build_quality_report(before_issues, after_issues, before_metrics, after_metrics)
+    return success, logs, destination, report
+
+
+def is_file_stable(path: Path, stable_seconds: int, max_wait_seconds: int) -> bool:
+    started = time.time()
+    previous_size = -1
+    previous_mtime = -1.0
+    stable_for = 0.0
+
+    while time.time() - started <= max_wait_seconds:
+        if not path.exists():
+            return False
+        stat = path.stat()
+        size_now = stat.st_size
+        mtime_now = stat.st_mtime
+
+        if size_now == previous_size and mtime_now == previous_mtime:
+            stable_for += 1.0
+            if stable_for >= stable_seconds:
+                return True
+        else:
+            stable_for = 0.0
+
+        previous_size = size_now
+        previous_mtime = mtime_now
+        time.sleep(1)
+
+    return False
+
+
+def enqueue_watch_file(path: Path, mtime: float) -> None:
+    with queued_versions_lock:
+        existing = queued_versions.get(path)
+        if existing == mtime:
+            return
+        queued_versions[path] = mtime
+    watch_queue.put((path, mtime))
+
+
+def watch_worker_loop(worker_id: int) -> None:
+    while True:
+        stl, enqueued_mtime = watch_queue.get()
+        try:
+            with queued_versions_lock:
+                current = queued_versions.get(stl)
+                if current == enqueued_mtime:
+                    queued_versions.pop(stl, None)
+
+            if not stl.exists():
+                continue
+
+            if not is_file_stable(stl, STABILITY_CHECK_SECONDS, STABILITY_MAX_WAIT_SECONDS):
+                print(f"[WATCHER #{worker_id}] SKIP (unstable): {stl.name}", flush=True)
+                continue
+
+            ok, logs, output, report = process_one_file(stl)
+            status = "OK" if ok else "FAIL"
+            print(
+                f"[WATCHER #{worker_id}] [{status}] {stl.name} -> {output.name}\n"
+                f"Report: {report}\n{logs}\n",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[WATCHER #{worker_id} ERROR] {exc}", flush=True)
+        finally:
+            watch_queue.task_done()
 
 
 def watcher_loop() -> None:
@@ -736,9 +1070,7 @@ def watcher_loop() -> None:
                 if seen.get(stl) == mtime:
                     continue
                 seen[stl] = mtime
-                ok, logs, output = process_one_file(stl)
-                status = "OK" if ok else "FAIL"
-                print(f"[{status}] {stl.name} -> {output.name}\n{logs}\n", flush=True)
+                enqueue_watch_file(stl, mtime)
         except Exception as exc:
             print(f"[WATCHER ERROR] {exc}", flush=True)
         time.sleep(POLL_SECONDS)
@@ -747,12 +1079,60 @@ def watcher_loop() -> None:
 def update_session(session_id: str, **updates) -> None:
     with sessions_lock:
         if session_id in sessions:
+            updates["updated_at"] = time.time()
             sessions[session_id].update(updates)
 
 
-def get_session(session_id: str) -> dict | None:
+def get_session(session_id: str, touch: bool = True) -> dict | None:
     with sessions_lock:
-        return sessions.get(session_id)
+        sess = sessions.get(session_id)
+        if sess and touch:
+            now = time.time()
+            sess["updated_at"] = now
+            sess["last_accessed_at"] = now
+        return sess
+
+
+def remove_session_files(session_dir: str | None) -> None:
+    if not session_dir:
+        return
+    try:
+        shutil.rmtree(session_dir, ignore_errors=True)
+    except Exception as exc:
+        print(f"[CLEANUP ERROR] could not remove {session_dir}: {exc}", flush=True)
+
+
+def cleanup_loop() -> None:
+    while True:
+        try:
+            now = time.time()
+            expired_dirs: list[str] = []
+            with sessions_lock:
+                expired_ids = [
+                    sid
+                    for sid, sess in sessions.items()
+                    if now - float(sess.get("updated_at", now)) > SESSION_TTL_SECONDS
+                ]
+                for sid in expired_ids:
+                    sess = sessions.pop(sid, None)
+                    if sess:
+                        expired_dirs.append(str(sess.get("session_dir", "")))
+
+            for d in expired_dirs:
+                remove_session_files(d)
+
+            cutoff = now - SESSION_TTL_SECONDS
+            for p in SESSION_ROOT.iterdir():
+                if not p.is_dir():
+                    continue
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        shutil.rmtree(p, ignore_errors=True)
+                except FileNotFoundError:
+                    continue
+        except Exception as exc:
+            print(f"[CLEANUP ERROR] {exc}", flush=True)
+        time.sleep(CLEANUP_SECONDS)
 
 
 def build_stage_cmd(input_file: Path, output_file: Path, flags: list[str]) -> list[str]:
@@ -790,6 +1170,8 @@ def run_repair_session(session_id: str) -> None:
     current_file = Path(sess["input_path"])
     session_dir = Path(sess["session_dir"])
     previous_issues = dict(sess.get("issues_current", {}))
+    initial_issues = dict(sess.get("issues_initial", {}))
+    initial_metrics = dict(sess.get("metrics_initial", {}))
     logs: list[str] = []
 
     update_session(session_id, status="repairing", stage="starting", logs=[])
@@ -812,6 +1194,7 @@ def run_repair_session(session_id: str) -> None:
 
         inspect_logs = run_admesh_inspect(current_file)
         parsed = parse_issue_counts(inspect_logs)
+        parsed_metrics = parse_mesh_metrics(inspect_logs)
         next_issues = {}
         for key, prev_value in previous_issues.items():
             parsed_value = parsed.get(key, prev_value)
@@ -824,24 +1207,41 @@ def run_repair_session(session_id: str) -> None:
         update_session(
             session_id,
             issues_current=next_issues,
+            metrics_current=parsed_metrics,
             remaining_errors=total_errors(next_issues),
+            quality_report=build_quality_report(
+                initial_issues,
+                next_issues,
+                initial_metrics,
+                parsed_metrics,
+            ),
             logs=logs,
         )
 
-    final_name = f"{secure_filename(current_file.stem) or 'model'}{PROCESSED_SUFFIX}"
-    final_output = session_dir / final_name
+    final_output = unique_output_path(session_dir, secure_filename(current_file.stem) or "model", PROCESSED_SUFFIX)
     shutil.copyfile(current_file, final_output)
 
-    zero_issues = {k: 0 for k in previous_issues.keys()}
+    final_inspect_logs = run_admesh_inspect(final_output)
+    final_issues = parse_issue_counts(final_inspect_logs)
+    final_metrics = parse_mesh_metrics(final_inspect_logs)
+    quality_report = build_quality_report(
+        initial_issues,
+        final_issues,
+        initial_metrics,
+        final_metrics,
+    )
+
     update_session(
         session_id,
         status="completed",
         stage="done",
-        issues_current=zero_issues,
-        remaining_errors=0,
+        issues_current=final_issues,
+        remaining_errors=total_errors(final_issues),
+        metrics_current=final_metrics,
+        quality_report=quality_report,
         output_path=str(final_output),
         output_name=final_output.name,
-        logs=logs,
+        logs=[*logs, f"[Final Analyze]\n{final_inspect_logs}"],
     )
 
 
@@ -857,7 +1257,16 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "watch_mode": WATCH_MODE, "poll_seconds": POLL_SECONDS})
+    return jsonify(
+        {
+            "status": "ok",
+            "watch_mode": WATCH_MODE,
+            "watch_workers": WATCH_WORKERS,
+            "queue_depth": watch_queue.qsize(),
+            "poll_seconds": POLL_SECONDS,
+            "session_ttl_seconds": SESSION_TTL_SECONDS,
+        }
+    )
 
 
 @app.get("/favicon.ico")
@@ -871,7 +1280,7 @@ def analyze_upload():
         return jsonify({"error": "No file uploaded"}), 400
 
     upload = request.files["file"]
-    if not upload.filename or not allowed_file(upload.filename):
+    if not upload.filename or not allowed_repair_file(upload.filename):
         return jsonify({"error": "Only .stl files are supported"}), 400
 
     ensure_dirs()
@@ -885,6 +1294,8 @@ def analyze_upload():
 
     inspect_logs = run_admesh_inspect(input_path)
     issues = parse_issue_counts(inspect_logs)
+    metrics = parse_mesh_metrics(inspect_logs)
+    now = time.time()
 
     session = {
         "session_id": session_id,
@@ -895,10 +1306,16 @@ def analyze_upload():
         "input_path": str(input_path),
         "issues_initial": issues,
         "issues_current": dict(issues),
+        "metrics_initial": metrics,
+        "metrics_current": dict(metrics),
         "remaining_errors": total_errors(issues),
         "output_path": None,
         "output_name": None,
+        "quality_report": build_quality_report(issues, issues, metrics, metrics),
         "logs": [f"[Analyze]\n{inspect_logs}"],
+        "created_at": now,
+        "updated_at": now,
+        "last_accessed_at": now,
     }
 
     with sessions_lock:
@@ -908,6 +1325,8 @@ def analyze_upload():
         {
             "session_id": session_id,
             "issues": issues,
+            "metrics": metrics,
+            "quality_report": session["quality_report"],
             "total_errors": total_errors(issues),
         }
     )
@@ -942,7 +1361,9 @@ def session_status(session_id: str):
             "status": sess.get("status"),
             "stage": sess.get("stage"),
             "issues_current": sess.get("issues_current"),
+            "metrics_current": sess.get("metrics_current"),
             "remaining_errors": sess.get("remaining_errors", 0),
+            "quality_report": sess.get("quality_report"),
             "logs": sess.get("logs", []),
             "output_name": sess.get("output_name"),
         }
@@ -965,6 +1386,46 @@ def download_repaired(session_id: str):
     return send_file(output_path, as_attachment=True, download_name=output_path.name)
 
 
+@app.post("/convert")
+def convert_upload():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    upload = request.files["file"]
+    target_format = (request.form.get("target_format") or DEFAULT_CONVERTER_TARGET).strip().lower()
+
+    if not upload.filename:
+        return jsonify({"error": "No file selected"}), 400
+
+    if not allowed_converter_file(upload.filename):
+        supported = ", ".join(sorted(CONVERTER_ALLOWED_EXTENSIONS))
+        return jsonify({"error": f"Unsupported input format. Supported: {supported}"}), 400
+
+    if target_format not in CONVERTER_ALLOWED_EXTENSIONS:
+        supported = ", ".join(sorted(CONVERTER_ALLOWED_EXTENSIONS))
+        return jsonify({"error": f"Unsupported target format. Supported: {supported}"}), 400
+
+    ensure_dirs()
+    safe_name = secure_filename(upload.filename) or "model.stl"
+    safe_stem = secure_filename(Path(safe_name).stem) or "model"
+
+    with tempfile.TemporaryDirectory(prefix="manifixer-convert-") as td:
+        temp_in = Path(td) / safe_name
+        upload.save(temp_in)
+
+        output_path = unique_output_path(OUTPUT_DIR, safe_stem, f".converted.{target_format}")
+        try:
+            convert_mesh(temp_in, output_path, target_format)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": f"Conversion failed: {exc}"}), 500
+
+    response = send_file(output_path, as_attachment=True, download_name=output_path.name)
+    response.headers["X-Output-Name"] = output_path.name
+    return response
+
+
 @app.post("/repair")
 def repair_upload():
     """Backwards-compatible single-call repair endpoint."""
@@ -972,7 +1433,7 @@ def repair_upload():
         return jsonify({"error": "No file uploaded"}), 400
 
     upload = request.files["file"]
-    if not upload.filename or not allowed_file(upload.filename):
+    if not upload.filename or not allowed_repair_file(upload.filename):
         return jsonify({"error": "Only .stl files are supported"}), 400
 
     ensure_dirs()
@@ -982,7 +1443,7 @@ def repair_upload():
         temp_in = Path(td) / safe_name
         upload.save(temp_in)
 
-        ok, logs, output = process_one_file(temp_in)
+        ok, logs, output, _report = process_one_file(temp_in)
         if not ok:
             return jsonify({"error": "Repair failed", "logs": logs}), 500
 
@@ -991,7 +1452,12 @@ def repair_upload():
 
 if __name__ == "__main__":
     ensure_dirs()
+    cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
+    cleanup_thread.start()
     if WATCH_MODE:
-        thread = threading.Thread(target=watcher_loop, daemon=True)
-        thread.start()
+        producer_thread = threading.Thread(target=watcher_loop, daemon=True)
+        producer_thread.start()
+        for i in range(WATCH_WORKERS):
+            worker_thread = threading.Thread(target=watch_worker_loop, args=(i + 1,), daemon=True)
+            worker_thread.start()
     app.run(host="0.0.0.0", port=PORT)
