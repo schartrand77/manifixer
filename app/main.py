@@ -22,7 +22,6 @@ POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 WATCH_MODE = os.getenv("WATCH_MODE", "1") == "1"
 PORT = int(os.getenv("PORT", "8080"))
 SESSION_ROOT = Path(tempfile.gettempdir()) / "manifixer-sessions"
-<<<<<<< HEAD
 WATCH_WORKERS = max(1, int(os.getenv("WATCH_WORKERS", "1")))
 SESSION_TTL_SECONDS = max(60, int(os.getenv("SESSION_TTL_SECONDS", "7200")))
 CLEANUP_SECONDS = max(30, int(os.getenv("CLEANUP_SECONDS", "300")))
@@ -30,12 +29,9 @@ STABILITY_CHECK_SECONDS = max(1, int(os.getenv("STABILITY_CHECK_SECONDS", "3")))
 STABILITY_MAX_WAIT_SECONDS = max(
     STABILITY_CHECK_SECONDS, int(os.getenv("STABILITY_MAX_WAIT_SECONDS", "120"))
 )
-=======
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "40"))
-SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(6 * 60 * 60)))
 MAX_SESSION_LOG_CHARS = int(os.getenv("MAX_SESSION_LOG_CHARS", "60000"))
 ADMESH_TIMEOUT_SECONDS = int(os.getenv("ADMESH_TIMEOUT_SECONDS", "180"))
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
 
 REPAIR_ALLOWED_EXTENSIONS = {"stl"}
 CONVERTER_ALLOWED_EXTENSIONS = {"3mf", "stl", "obj", "ply", "off", "glb"}
@@ -751,11 +747,9 @@ HTML = """
 app = Flask(__name__)
 sessions: dict[str, dict] = {}
 sessions_lock = threading.Lock()
-<<<<<<< HEAD
 watch_queue: queue.Queue[tuple[Path, float]] = queue.Queue()
 queued_versions: dict[Path, float] = {}
 queued_versions_lock = threading.Lock()
-=======
 session_order: deque[str] = deque()
 stats_lock = threading.Lock()
 stats = {
@@ -788,7 +782,6 @@ ISSUE_PATTERNS = {
     ],
 }
 PARTS_PATTERN = re.compile(r"number of parts\s*:\s*(\d+)", flags=re.IGNORECASE)
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
 
 
 def ensure_dirs() -> None:
@@ -1161,14 +1154,7 @@ def watcher_loop() -> None:
                 if seen.get(stl) == mtime:
                     continue
                 seen[stl] = mtime
-<<<<<<< HEAD
                 enqueue_watch_file(stl, mtime)
-=======
-                ok, logs, output = process_one_file(stl)
-                increment_stat("watch_processed" if ok else "watch_failed")
-                status = "OK" if ok else "FAIL"
-                print(f"[{status}] {stl.name} -> {output.name}\n{logs}\n", flush=True)
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
         except Exception as exc:
             print(f"[WATCHER ERROR] {exc}", flush=True)
         time.sleep(POLL_SECONDS)
@@ -1185,7 +1171,6 @@ def update_session(session_id: str, **updates) -> None:
 def get_session(session_id: str, touch: bool = True) -> dict | None:
     with sessions_lock:
         sess = sessions.get(session_id)
-<<<<<<< HEAD
         if sess and touch:
             now = time.time()
             sess["updated_at"] = now
@@ -1233,11 +1218,6 @@ def cleanup_loop() -> None:
         except Exception as exc:
             print(f"[CLEANUP ERROR] {exc}", flush=True)
         time.sleep(CLEANUP_SECONDS)
-=======
-        if sess:
-            sess["updated_at"] = time.time()
-        return sess
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
 
 
 def build_stage_cmd(input_file: Path, output_file: Path, flags: list[str]) -> list[str]:
@@ -1321,23 +1301,18 @@ def run_repair_session(session_id: str) -> None:
             issues_current=next_issues,
             metrics_current=parsed_metrics,
             remaining_errors=total_errors(next_issues),
-<<<<<<< HEAD
             quality_report=build_quality_report(
                 initial_issues,
                 next_issues,
                 initial_metrics,
                 parsed_metrics,
             ),
-            logs=logs,
-=======
             logs=trim_logs(logs),
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
         )
 
     final_output = unique_output_path(session_dir, secure_filename(current_file.stem) or "model", PROCESSED_SUFFIX)
     shutil.copyfile(current_file, final_output)
 
-<<<<<<< HEAD
     final_inspect_logs = run_admesh_inspect(final_output)
     final_issues = parse_issue_counts(final_inspect_logs)
     final_metrics = parse_mesh_metrics(final_inspect_logs)
@@ -1347,11 +1322,7 @@ def run_repair_session(session_id: str) -> None:
         initial_metrics,
         final_metrics,
     )
-
-=======
-    zero_issues = {k: 0 for k in previous_issues.keys()}
     increment_stat("repair_success")
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
     update_session(
         session_id,
         status="completed",
@@ -1362,11 +1333,7 @@ def run_repair_session(session_id: str) -> None:
         quality_report=quality_report,
         output_path=str(final_output),
         output_name=final_output.name,
-<<<<<<< HEAD
-        logs=[*logs, f"[Final Analyze]\n{final_inspect_logs}"],
-=======
-        logs=trim_logs(logs),
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
+        logs=trim_logs([*logs, f"[Final Analyze]\n{final_inspect_logs}"]),
     )
 
 
@@ -1441,17 +1408,11 @@ def analyze_upload():
         "remaining_errors": total_errors(issues),
         "output_path": None,
         "output_name": None,
-<<<<<<< HEAD
         "quality_report": build_quality_report(issues, issues, metrics, metrics),
-        "logs": [f"[Analyze]\n{inspect_logs}"],
+        "logs": trim_logs([f"[Analyze]\n{inspect_logs}"]),
         "created_at": now,
         "updated_at": now,
         "last_accessed_at": now,
-=======
-        "created_at": time.time(),
-        "updated_at": time.time(),
-        "logs": trim_logs([f"[Analyze]\n{inspect_logs}"]),
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
     }
 
     with sessions_lock:
@@ -1526,7 +1487,6 @@ def download_repaired(session_id: str):
     return send_file(output_path, as_attachment=True, download_name=output_path.name)
 
 
-<<<<<<< HEAD
 @app.post("/convert")
 def convert_upload():
     if "file" not in request.files:
@@ -1565,7 +1525,6 @@ def convert_upload():
     response = send_file(output_path, as_attachment=True, download_name=output_path.name)
     response.headers["X-Output-Name"] = output_path.name
     return response
-=======
 
 
 @app.get("/metrics")
@@ -1619,7 +1578,6 @@ def delete_session(session_id: str):
 
     shutil.rmtree(sess.get("session_dir", ""), ignore_errors=True)
     return jsonify({"status": "deleted", "session_id": session_id})
->>>>>>> 6a901bd50bee180dcf5f7437ec5fbb3925a6c61b
 
 
 @app.post("/repair")
